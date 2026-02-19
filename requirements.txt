@@ -1,0 +1,36 @@
+# Core Framework
+langgraph
+langchain
+langchain-google-genai
+langchain-core
+google-generativeai
+
+# Slack Integration
+slack-bolt
+slack-sdk
+
+# Database
+sqlalchemy
+alembic
+
+# Data Validation
+pydantic
+pydantic-settings
+
+# HTTP Client
+httpx
+requests
+
+# Utilities
+python-dotenv
+python-dateutil
+pytz
+
+# MySQL Driver
+pymysql
+cryptography
+
+# Development
+pytest
+pytest-asyncio
+black
