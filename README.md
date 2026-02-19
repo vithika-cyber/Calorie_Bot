@@ -1,268 +1,121 @@
-# Calorie Counting Slack Bot 🥗
+# CalorieBot - Slack Nutrition Tracker
 
-A conversational AI-powered calorie tracking bot for Slack that makes nutrition logging feel natural and effortless.
+A conversational AI-powered calorie tracking bot for Slack. Tell it what you ate in plain English and it handles the rest.
 
 ## Features
 
-- 🗣️ **Natural Language Processing**: Just tell the bot what you ate - "Had 2 eggs and toast for breakfast"
-- 🤖 **Agentic AI System**: Built with LangGraph for intelligent conversation flow
-- 📊 **Real-time Tracking**: See your daily progress and macro breakdown instantly
-- 🎯 **Personalized Goals**: Set targets based on your fitness objectives
-- 🔍 **USDA Nutrition Data**: Accurate nutrition information from official government database
-- 💾 **Complete History**: Track your eating patterns over time
+- **Natural Language Input** - "Had 2 eggs and toast for breakfast"
+- **USDA Nutrition Data** - Accurate values from the official government database, with AI fallback estimation
+- **Daily Tracking** - Progress bars, macro breakdowns, and goal tracking
+- **Personalized Goals** - Calorie targets based on your age, weight, height, and activity level
 
 ## Architecture
 
-This bot uses an agentic system powered by LangGraph with multiple specialized agents:
+Built with LangGraph (agentic workflow):
 
-- **Router Agent**: Determines user intent (logging food, asking questions, etc.)
-- **Food Parser Agent**: Extracts structured data from natural language using GPT-4
-- **Nutrition Agent**: Looks up accurate nutrition data from USDA API
-- **Storage Agent**: Manages all database operations
-- **Query Agent**: Handles questions about your food history
+```
+Slack message -> Router Agent -> Food Parser (Gemini AI)
+                                      |
+                              Nutrition Lookup (USDA API + AI fallback)
+                                      |
+                              Storage Agent (MySQL) -> Response
+```
 
-## Prerequisites
+## Tech Stack
 
-- Python 3.11 or higher
-- OpenAI API key (GPT-4 access)
-- Slack workspace with admin permissions
-- USDA API key (optional but recommended)
+- **Python 3.11+** with LangGraph / LangChain
+- **Google Gemini** for NLU (food parsing, intent detection, onboarding)
+- **USDA FoodData Central API** for nutrition data
+- **MySQL** via SQLAlchemy
+- **Slack Bolt** with Socket Mode
 
-## Setup Instructions
+## Quick Start
 
-### 1. Clone and Install Dependencies
+### 1. Install dependencies
 
 ```bash
-cd count_calories
+python -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # macOS/Linux
 pip install -r requirements.txt
 ```
 
-### 2. Get API Keys
+### 2. Get API keys
 
-#### OpenAI API Key
-1. Go to https://platform.openai.com/api-keys
-2. Create a new API key
-3. Copy the key (starts with `sk-proj-...`)
+- **Google Gemini**: https://aistudio.google.com/app/apikey
+- **USDA** (optional): https://fdc.nal.usda.gov/api-key-signup.html
+- **Slack App**: Create at https://api.slack.com/apps
+  - Enable Socket Mode, get App Token (`xapp-...`)
+  - Add bot scopes: `app_mentions:read`, `chat:write`, `im:history`, `im:read`, `im:write`, `users:read`
+  - Subscribe to events: `app_mention`, `message.im`
+  - Install to workspace, get Bot Token (`xoxb-...`) and Signing Secret
 
-#### USDA API Key (Optional)
-1. Go to https://fdc.nal.usda.gov/api-key-signup.html
-2. Sign up for a free API key
-3. Copy the key from your email
-
-#### Slack App Setup
-1. Go to https://api.slack.com/apps
-2. Click "Create New App" → "From scratch"
-3. Name it (e.g., "CalorieBot") and select your workspace
-
-**Enable Socket Mode:**
-- Go to "Socket Mode" in sidebar
-- Toggle "Enable Socket Mode" ON
-- Create a token (name: "Local Dev")
-- Copy the App Token (starts with `xapp-`)
-
-**Add Bot Token Scopes:**
-Go to "OAuth & Permissions" → "Bot Token Scopes", add:
-- `app_mentions:read`
-- `chat:write`
-- `im:history`
-- `im:read`
-- `im:write`
-- `users:read`
-
-**Subscribe to Events:**
-- Go to "Event Subscriptions"
-- Toggle "Enable Events" ON
-- Add bot events: `app_mention`, `message.im`
-
-**Install to Workspace:**
-- Go to "Install App"
-- Click "Install to Workspace"
-- Copy the Bot User OAuth Token (starts with `xoxb-`)
-
-**Get Signing Secret:**
-- Go to "Basic Information"
-- Under "App Credentials", copy the Signing Secret
-
-### 3. Configure Environment
+### 3. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and add your API keys:
+Edit `.env` with your keys:
 
 ```env
-OPENAI_API_KEY=sk-proj-your-actual-key
-USDA_API_KEY=your-usda-key-optional
-SLACK_BOT_TOKEN=xoxb-your-bot-token
-SLACK_APP_TOKEN=xapp-your-app-token
-SLACK_SIGNING_SECRET=your-signing-secret
+GOOGLE_API_KEY=your-key
+GEMINI_MODEL=gemini-2.5-flash-lite
+USDA_API_KEY=your-usda-key
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_SIGNING_SECRET=your-secret
+DATABASE_URL=mysql+pymysql://root:password@localhost/calorie_bot
 ```
 
-### 4. Run the Bot
+### 4. Set up MySQL
+
+```sql
+CREATE DATABASE calorie_bot;
+```
+
+Tables are created automatically on first run.
+
+### 5. Run
 
 ```bash
-python src/main.py
+python -m src.main
 ```
 
-You should see:
-```
-⚡️ Bolt app is running!
-🤖 CalorieBot is online and ready!
-```
-
-### 5. Test in Slack
-
-Open Slack and DM the bot:
-```
-"Hi!"
-```
-
-The bot will guide you through onboarding and help you start tracking!
-
-## Usage Examples
-
-### Logging Food
-
-**Simple:**
-```
-"I had an apple"
-"Ate a banana"
-```
-
-**Complex:**
-```
-"Had 2 scrambled eggs, whole wheat toast with avocado, and coffee for breakfast"
-"Lunch was a chicken caesar salad with grilled chicken breast"
-```
-
-**With Time Context:**
-```
-"This morning I had oatmeal with blueberries"
-"Yesterday evening I had pizza"
-```
-
-### Asking Questions
-
-```
-"What did I eat today?"
-"Show my breakfast"
-"How many calories so far?"
-"What's my daily goal?"
-"Show me yesterday's meals"
-```
-
-### Corrections
-
-```
-"Actually that was 3 eggs, not 2"
-"Delete my last entry"
-"That was a large apple, not medium"
-```
-
-## How It Works
-
-1. **You send a message** in natural language
-2. **Router Agent** determines your intent
-3. **Food Parser Agent** extracts food items using GPT-4
-4. **Nutrition Agent** looks up data from USDA database
-5. **Storage Agent** saves to your personal log
-6. **Bot responds** with a summary and your daily progress
+DM the bot in Slack to start!
 
 ## Project Structure
 
 ```
-count_calories/
-├── src/
-│   ├── main.py              # Application entry point
-│   ├── config.py            # Configuration management
-│   ├── agents/              # LangGraph agents
-│   ├── services/            # API wrappers
-│   ├── database/            # Database models
-│   └── utils/               # Helper functions
-├── tests/                   # Unit tests
-├── calories.db              # SQLite database (auto-created)
-├── requirements.txt         # Python dependencies
-└── .env                     # Your API keys
+src/
+  main.py                 # Entry point, Slack event handlers
+  config.py               # Settings from .env
+  agents/
+    orchestrator.py       # LangGraph workflow (core logic)
+    router_agent.py       # Intent classification
+    food_parser.py        # NL -> structured food data
+    nutrition_lookup.py   # USDA lookup + AI fallback
+    storage_agent.py      # Database CRUD
+  services/
+    ai_service.py         # Google Gemini wrapper
+    usda_service.py       # USDA FoodData Central wrapper
+  database/
+    database.py           # SQLAlchemy engine/session
+    models.py             # User, FoodLog, Goal models
+  utils/
+    calculations.py       # BMR, TDEE, calorie goal math
+    formatters.py         # Slack message formatting
 ```
 
 ## Troubleshooting
 
-### Bot doesn't respond in Slack
-- Check that Socket Mode is enabled
-- Verify SLACK_APP_TOKEN and SLACK_BOT_TOKEN are correct
-- Make sure the bot is installed to your workspace
-- Check the terminal for error messages
-
-### "OpenAI API error"
-- Verify your OPENAI_API_KEY is correct
-- Check you have available credits: https://platform.openai.com/usage
-- Ensure you have GPT-4 access
-
-### "USDA API error" 
-- The bot works without a USDA API key (but has rate limits)
-- If you have a key, verify it's correctly set in `.env`
-- Check internet connection
-
-### Database errors
-- Delete `calories.db` to reset the database
-- Make sure you have write permissions in the directory
-
-## API Costs Estimate
-
-**OpenAI API (GPT-4):**
-- ~$0.01-0.03 per food logging interaction
-- ~$5-15/month for moderate daily use
-
-**USDA API:**
-- 100% free (with optional API key for higher limits)
-
-**Slack:**
-- Free for standard workspace
-
-## Development
-
-### Running Tests
-```bash
-pytest tests/
-```
-
-### Code Formatting
-```bash
-black src/
-```
-
-### Database Reset
-```bash
-rm calories.db
-python src/main.py  # Will recreate on startup
-```
-
-## Roadmap
-
-- [ ] Photo-based food logging (GPT-4 Vision)
-- [ ] Exercise tracking and calorie adjustment
-- [ ] Weekly insights and pattern analysis
-- [ ] Custom foods and recipes
-- [ ] Integration with fitness apps (Strava, Apple Health)
-- [ ] Web dashboard for visualizations
-- [ ] Multi-language support
-
-## Contributing
-
-This is a personal project, but suggestions and feedback are welcome!
+| Problem | Fix |
+|---------|-----|
+| Bot doesn't respond | Check Socket Mode is on, tokens are correct, bot is installed |
+| Gemini quota error (429) | Switch to `gemini-2.5-flash-lite` in `.env`, or wait for daily reset |
+| USDA returns no results | Bot falls back to AI estimation automatically |
+| Database errors | Verify `DATABASE_URL` and that the MySQL database exists |
 
 ## License
 
-MIT License - Feel free to use and modify for your own projects.
-
-## Support
-
-For issues or questions:
-1. Check the Troubleshooting section above
-2. Review the terminal logs for error messages
-3. Verify all API keys are correctly configured
-
----
-
-Built with ❤️ using LangGraph, OpenAI GPT-4, and USDA FoodData Central
+MIT

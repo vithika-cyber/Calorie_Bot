@@ -62,12 +62,7 @@ settings: Optional[Settings] = None
 
 
 def get_settings() -> Settings:
-    """
-    Get or create settings instance
-    
-    Returns:
-        Settings instance with all configuration
-    """
+    """Get or create settings singleton."""
     global settings
     if settings is None:
         settings = Settings()
@@ -75,12 +70,7 @@ def get_settings() -> Settings:
 
 
 def validate_settings() -> tuple[bool, list[str]]:
-    """
-    Validate that all required settings are present
-    
-    Returns:
-        Tuple of (is_valid, list of missing/invalid settings)
-    """
+    """Validate that all required settings are present."""
     errors = []
     
     try:
@@ -104,18 +94,3 @@ def validate_settings() -> tuple[bool, list[str]]:
         errors.append(f"Configuration error: {str(e)}")
     
     return len(errors) == 0, errors
-
-
-if __name__ == "__main__":
-    # Test configuration
-    is_valid, errors = validate_settings()
-    if is_valid:
-        print("✅ Configuration is valid!")
-        config = get_settings()
-        print(f"Environment: {config.environment}")
-        print(f"Gemini Model: {config.gemini_model}")
-        print(f"Database: {config.database_url}")
-    else:
-        print("❌ Configuration errors:")
-        for error in errors:
-            print(f"  - {error}")

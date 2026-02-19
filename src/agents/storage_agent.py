@@ -4,11 +4,11 @@ Storage Agent - Handles all database operations
 
 import logging
 from typing import Dict, List, Any, Optional
-from datetime import datetime, date, timedelta
-from sqlalchemy import func, and_
+from datetime import datetime, date
+from sqlalchemy import and_
 
 from ..database.database import get_db_session
-from ..database.models import User, FoodLog, Goal, MealType, GoalType, ActivityLevel
+from ..database.models import User, FoodLog, MealType
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +23,7 @@ class StorageAgent:
     # User Operations
     
     def get_or_create_user(self, slack_user_id: str, slack_team_id: str) -> Dict[str, Any]:
-        """
-        Get existing user or create new one
-        
-        Args:
-            slack_user_id: Slack user ID
-            slack_team_id: Slack team ID
-            
-        Returns:
-            Dictionary with user attributes
-        """
+        """Get existing user or create new one."""
         with get_db_session() as db:
             user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
             
@@ -68,16 +59,7 @@ class StorageAgent:
             return user_dict
     
     def update_user(self, slack_user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Update user information
-        
-        Args:
-            slack_user_id: Slack user ID
-            updates: Dictionary of fields to update
-            
-        Returns:
-            Updated user dictionary
-        """
+        """Update user information and return updated dict."""
         with get_db_session() as db:
             user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
             
@@ -127,19 +109,7 @@ class StorageAgent:
         meal_type: str,
         totals: Dict[str, float]
     ) -> Dict[str, Any]:
-        """
-        Create a new food log entry
-        
-        Args:
-            slack_user_id: Slack user ID
-            raw_text: Original user message
-            items: List of food items with nutrition
-            meal_type: Type of meal
-            totals: Total nutrition
-            
-        Returns:
-            Created FoodLog dictionary
-        """
+        """Create a new food log entry."""
         with get_db_session() as db:
             user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
             
@@ -193,16 +163,7 @@ class StorageAgent:
         slack_user_id: str,
         target_date: Optional[date] = None
     ) -> List[Dict[str, Any]]:
-        """
-        Get all food logs for a specific date
-        
-        Args:
-            slack_user_id: Slack user ID
-            target_date: Date to query (default: today)
-            
-        Returns:
-            List of food log dictionaries
-        """
+        """Get all food logs for a specific date (default: today)."""
         if target_date is None:
             target_date = date.today()
         
@@ -243,16 +204,7 @@ class StorageAgent:
         slack_user_id: str,
         target_date: Optional[date] = None
     ) -> Dict[str, float]:
-        """
-        Get total nutrition for a specific date
-        
-        Args:
-            slack_user_id: Slack user ID
-            target_date: Date to query (default: today)
-            
-        Returns:
-            Dictionary with totals
-        """
+        """Get total nutrition for a specific date (default: today)."""
         logs = self.get_food_logs_by_date(slack_user_id, target_date)
         
         totals = {
@@ -275,16 +227,7 @@ class StorageAgent:
         return totals
     
     def delete_food_log(self, log_id: int, slack_user_id: str) -> bool:
-        """
-        Delete a food log entry
-        
-        Args:
-            log_id: Food log ID
-            slack_user_id: Slack user ID (for verification)
-            
-        Returns:
-            True if deleted, False if not found or not authorized
-        """
+        """Delete a food log entry. Returns True if deleted."""
         with get_db_session() as db:
             user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
             
@@ -307,146 +250,6 @@ class StorageAgent:
             
             return True
     
-    def get_last_food_log(self, slack_user_id: str) -> Optional[FoodLog]:
-        """Get the most recent food log for a user"""
-        with get_db_session() as db:
-            user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
-            
-            if not user:
-                return None
-            
-            log = db.query(FoodLog).filter(
-                FoodLog.user_id == user.id
-            ).order_by(FoodLog.logged_at.desc()).first()
-            
-            return log
-    
-    # Goal Operations
-    
-    def create_goal(
-        self,
-        slack_user_id: str,
-        goal_type: str,
-        target_weight: Optional[float] = None,
-        target_date: Optional[datetime] = None
-    ) -> Goal:
-        """
-        Create a new goal for user
-        
-        Args:
-            slack_user_id: Slack user ID
-            goal_type: Type of goal
-            target_weight: Target weight (optional)
-            target_date: Target date (optional)
-            
-        Returns:
-            Created Goal object
-        """
-        with get_db_session() as db:
-            user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
-            
-            if not user:
-                raise ValueError(f"User not found: {slack_user_id}")
-            
-            # Convert goal_type string to enum
-            try:
-                goal_enum = GoalType[goal_type.upper()]
-            except KeyError:
-                goal_enum = GoalType.GENERAL_HEALTH
-            
-            goal = Goal(
-                user_id=user.id,
-                goal_type=goal_enum,
-                starting_weight=user.current_weight,
-                target_weight=target_weight,
-                current_weight=user.current_weight,
-                target_date=target_date
-            )
-            
-            db.add(goal)
-            db.commit()
-            db.refresh(goal)
-            
-            logger.info(f"Created goal for {slack_user_id}: {goal_type}")
-            
-            return goal
-    
-    def get_active_goal(self, slack_user_id: str) -> Optional[Goal]:
-        """Get user's active goal"""
-        with get_db_session() as db:
-            user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
-            
-            if not user:
-                return None
-            
-            goal = db.query(Goal).filter(
-                and_(
-                    Goal.user_id == user.id,
-                    Goal.status == "active"
-                )
-            ).order_by(Goal.created_at.desc()).first()
-            
-            return goal
-    
-    # Analytics and Statistics
-    
-    def get_weekly_stats(self, slack_user_id: str) -> Dict[str, Any]:
-        """
-        Get weekly statistics for user
-        
-        Args:
-            slack_user_id: Slack user ID
-            
-        Returns:
-            Dictionary with weekly stats
-        """
-        today = date.today()
-        week_ago = today - timedelta(days=7)
-        
-        stats = {
-            "days_logged": 0,
-            "total_calories": 0,
-            "avg_calories": 0,
-            "meals_logged": 0,
-            "top_meal_type": None
-        }
-        
-        with get_db_session() as db:
-            user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
-            
-            if not user:
-                return stats
-            
-            start_of_week = datetime.combine(week_ago, datetime.min.time())
-            
-            logs = db.query(FoodLog).filter(
-                and_(
-                    FoodLog.user_id == user.id,
-                    FoodLog.logged_at >= start_of_week
-                )
-            ).all()
-            
-            if not logs:
-                return stats
-            
-            # Calculate stats
-            days_with_logs = set()
-            total_calories = 0
-            meal_types = {}
-            
-            for log in logs:
-                days_with_logs.add(log.logged_at.date())
-                total_calories += log.total_calories
-                meal_type = log.meal_type.value
-                meal_types[meal_type] = meal_types.get(meal_type, 0) + 1
-            
-            stats["days_logged"] = len(days_with_logs)
-            stats["total_calories"] = round(total_calories, 1)
-            stats["avg_calories"] = round(total_calories / len(days_with_logs), 1) if days_with_logs else 0
-            stats["meals_logged"] = len(logs)
-            stats["top_meal_type"] = max(meal_types, key=meal_types.get) if meal_types else None
-        
-        return stats
 
 
 # Singleton instance
@@ -454,32 +257,8 @@ _storage_agent: Optional[StorageAgent] = None
 
 
 def get_storage_agent() -> StorageAgent:
-    """
-    Get or create storage agent instance
-    
-    Returns:
-        Storage agent singleton
-    """
+    """Get or create storage agent singleton."""
     global _storage_agent
     if _storage_agent is None:
         _storage_agent = StorageAgent()
     return _storage_agent
-
-
-if __name__ == "__main__":
-    # Test storage agent
-    from ..database.database import init_db
-    
-    print("Initializing database...")
-    init_db()
-    
-    agent = get_storage_agent()
-    
-    # Test user creation
-    test_user_id = "TEST123"
-    test_team_id = "TEAM123"
-    
-    print(f"\nCreating/getting user: {test_user_id}")
-    user = agent.get_or_create_user(test_user_id, test_team_id)
-    print(f"User ID: {user.id}")
-    print(f"Onboarded: {user.is_onboarded}")

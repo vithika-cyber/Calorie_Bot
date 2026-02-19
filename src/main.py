@@ -10,7 +10,6 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 from .config import get_settings, validate_settings
 from .database.database import init_db, check_db_connection
 from .agents.orchestrator import get_orchestrator
-from .services.slack_service import create_food_log_blocks
 
 # Configure logging
 logging.basicConfig(
@@ -26,12 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_app() -> tuple[App, SocketModeHandler]:
-    """
-    Create and configure the Slack app
-    
-    Returns:
-        Tuple of (App, SocketModeHandler)
-    """
+    """Create and configure the Slack app."""
     # Validate configuration
     logger.info("Validating configuration...")
     is_valid, errors = validate_settings()

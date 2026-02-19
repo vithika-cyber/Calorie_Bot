@@ -20,11 +20,7 @@ SessionLocal = None
 
 
 def init_db() -> None:
-    """
-    Initialize the database engine and create all tables
-    
-    This function should be called once at application startup
-    """
+    """Initialize the database engine and create all tables."""
     global engine, SessionLocal
     
     settings = get_settings()
@@ -65,39 +61,9 @@ def init_db() -> None:
         raise
 
 
-def get_db() -> Generator[Session, None, None]:
-    """
-    Get database session - use as a dependency
-    
-    Yields:
-        Database session
-        
-    Example:
-        with get_db() as db:
-            users = db.query(User).all()
-    """
-    if SessionLocal is None:
-        raise RuntimeError("Database not initialized. Call init_db() first.")
-    
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 @contextmanager
 def get_db_session() -> Generator[Session, None, None]:
-    """
-    Context manager for database sessions
-    
-    Yields:
-        Database session
-        
-    Example:
-        with get_db_session() as db:
-            user = db.query(User).first()
-    """
+    """Context manager for database sessions with auto-commit/rollback."""
     if SessionLocal is None:
         raise RuntimeError("Database not initialized. Call init_db() first.")
     
@@ -113,30 +79,8 @@ def get_db_session() -> Generator[Session, None, None]:
         db.close()
 
 
-def reset_database() -> None:
-    """
-    Drop all tables and recreate them - USE WITH CAUTION
-    
-    This will delete all data in the database
-    """
-    global engine
-    
-    if engine is None:
-        raise RuntimeError("Database not initialized. Call init_db() first.")
-    
-    logger.warning("⚠️  Resetting database - all data will be lost!")
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    logger.info("[OK] Database reset complete")
-
-
 def check_db_connection() -> bool:
-    """
-    Check if database connection is working
-    
-    Returns:
-        True if connection is successful, False otherwise
-    """
+    """Check if database connection is working."""
     try:
         from sqlalchemy import text
         with get_db_session() as db:
@@ -145,14 +89,3 @@ def check_db_connection() -> bool:
     except Exception as e:
         logger.error(f"Database connection check failed: {e}")
         return False
-
-
-if __name__ == "__main__":
-    # Test database initialization
-    print("Initializing database...")
-    init_db()
-    
-    if check_db_connection():
-        print("[OK] Database connection successful!")
-    else:
-        print("[FAIL] Database connection failed!")

@@ -41,31 +41,7 @@ class USDAService:
         self._cache[key] = (data, datetime.now())
     
     def search_foods(self, query: str, page_size: int = 10) -> List[Dict[str, Any]]:
-        """
-        Search for foods in USDA database
-        
-        Args:
-            query: Food name to search for
-            page_size: Number of results to return
-            
-        Returns:
-            List of food items with nutrition data
-            
-        Example result:
-            [
-                {
-                    "fdc_id": 12345,
-                    "description": "Egg, whole, raw, fresh",
-                    "data_type": "Survey (FNDDS)",
-                    "calories": 143,
-                    "protein": 12.6,
-                    "carbs": 0.7,
-                    "fat": 9.5,
-                    "serving_size": 100,
-                    "serving_unit": "g"
-                }
-            ]
-        """
+        """Search for foods in USDA database."""
         # Check cache
         cache_key = f"search:{query}:{page_size}"
         cached = self._get_from_cache(cache_key)
@@ -117,15 +93,7 @@ class USDAService:
             return []
     
     def get_food_by_id(self, fdc_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Get detailed food information by FDC ID
-        
-        Args:
-            fdc_id: USDA FoodData Central ID
-            
-        Returns:
-            Detailed food information
-        """
+        """Get detailed food information by FDC ID."""
         # Check cache
         cache_key = f"food:{fdc_id}"
         cached = self._get_from_cache(cache_key)
@@ -157,15 +125,7 @@ class USDAService:
             return None
     
     def _parse_food_item(self, food_data: Dict) -> Optional[Dict[str, Any]]:
-        """
-        Parse USDA food item into our standard format
-        
-        Args:
-            food_data: Raw food data from USDA API
-            
-        Returns:
-            Parsed food data
-        """
+        """Parse USDA food item into our standard format (per 100g)."""
         try:
             # Extract basic info
             result = {
@@ -217,17 +177,7 @@ class USDAService:
         quantity: float,
         unit: str
     ) -> Dict[str, float]:
-        """
-        Calculate nutrition for a specific serving size
-        
-        Args:
-            food_data: Food data from USDA
-            quantity: Quantity eaten
-            unit: Unit of measurement
-            
-        Returns:
-            Nutrition data scaled to the serving
-        """
+        """Scale USDA nutrition (per 100g) to the user's serving size."""
         # Weight-based units (exact)
         weight_units = {
             "g": 1, "gram": 1, "grams": 1,
@@ -333,43 +283,8 @@ _usda_service: Optional[USDAService] = None
 
 
 def get_usda_service() -> USDAService:
-    """
-    Get or create USDA service instance
-    
-    Returns:
-        USDA service singleton
-    """
+    """Get or create USDA service singleton."""
     global _usda_service
     if _usda_service is None:
         _usda_service = USDAService()
     return _usda_service
-
-
-if __name__ == "__main__":
-    # Test USDA service
-    service = get_usda_service()
-    
-    # Test food search
-    print("Searching for 'eggs'...")
-    results = service.search_foods("eggs", page_size=5)
-    
-    if results:
-        print(f"\nFound {len(results)} results:")
-        for i, food in enumerate(results[:3], 1):
-            print(f"\n{i}. {food['description']}")
-            print(f"   Calories: {food.get('calories', 'N/A')} per 100g")
-            print(f"   Protein: {food.get('protein', 'N/A')}g")
-            print(f"   Carbs: {food.get('carbs', 'N/A')}g")
-            print(f"   Fat: {food.get('fat', 'N/A')}g")
-        
-        # Test serving calculation
-        print("\n\nCalculating nutrition for 2 large eggs...")
-        nutrition = service.calculate_nutrition_for_serving(
-            results[0],
-            quantity=2,
-            unit="large"
-        )
-        print(f"Total calories: {nutrition['calories']}")
-        print(f"Total protein: {nutrition['protein']}g")
-    else:
-        print("No results found")

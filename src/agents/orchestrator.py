@@ -3,9 +3,8 @@ Orchestrator - Coordinates all agents using LangGraph
 """
 
 import logging
-from typing import Dict, Any, Optional, TypedDict, Annotated
+from typing import Dict, Any, Optional, TypedDict
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage
 
 from .router_agent import get_router_agent
 from .food_parser import get_food_parser_agent
@@ -45,11 +44,7 @@ class CalorieBotOrchestrator:
         self.graph = self._build_graph()
     
     def _build_graph(self) -> StateGraph:
-        """
-        Build the LangGraph workflow
-        
-        The graph defines the flow of conversation through various agents
-        """
+        """Build the LangGraph workflow."""
         workflow = StateGraph(ConversationState)
         
         # Add nodes (agent functions)
@@ -105,17 +100,7 @@ class CalorieBotOrchestrator:
         team_id: str,
         message: str
     ) -> Dict[str, Any]:
-        """
-        Process a user message through the agent graph
-        
-        Args:
-            user_id: Slack user ID
-            team_id: Slack team ID
-            message: User's message
-            
-        Returns:
-            Dictionary with response and metadata
-        """
+        """Process a user message through the agent graph."""
         try:
             # Initial state
             initial_state = ConversationState(
@@ -367,12 +352,12 @@ Need anything else?"""
     
     def _handle_onboarding(self, state: ConversationState) -> ConversationState:
         """Handle onboarding flow - check if user already provided data or show welcome"""
-        from ..services.openai_service import OpenAIService
+        from ..services.ai_service import AIService
         from ..utils.calculations import calculate_tdee, calculate_calorie_goal
         import re
         
         # Try to extract onboarding data from the message
-        ai_service = OpenAIService()
+        ai_service = AIService()
         
         try:
             # Ask AI to extract onboarding information
@@ -490,40 +475,8 @@ _orchestrator: Optional[CalorieBotOrchestrator] = None
 
 
 def get_orchestrator() -> CalorieBotOrchestrator:
-    """
-    Get or create orchestrator instance
-    
-    Returns:
-        Orchestrator singleton
-    """
+    """Get or create orchestrator singleton."""
     global _orchestrator
     if _orchestrator is None:
         _orchestrator = CalorieBotOrchestrator()
     return _orchestrator
-
-
-if __name__ == "__main__":
-    # Test orchestrator
-    from ..database.database import init_db
-    
-    print("Initializing database...")
-    init_db()
-    
-    orchestrator = get_orchestrator()
-    
-    test_messages = [
-        ("Hi!", "greeting"),
-        ("I had 2 eggs and toast", "food logging"),
-        ("What did I eat today?", "query"),
-    ]
-    
-    print("\nTesting Orchestrator:\n")
-    test_user = "TEST_USER_123"
-    test_team = "TEST_TEAM_123"
-    
-    for msg, description in test_messages:
-        print(f"Testing: {description}")
-        print(f"Message: '{msg}'")
-        result = orchestrator.process_message(test_user, test_team, msg)
-        print(f"Response: {result['response'][:100]}...")
-        print()

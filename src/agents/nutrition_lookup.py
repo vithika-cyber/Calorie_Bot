@@ -21,15 +21,7 @@ class NutritionAgent:
         self,
         parsed_foods: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """
-        Look up nutrition data for parsed food items
-        
-        Args:
-            parsed_foods: List of parsed food items from FoodParserAgent
-            
-        Returns:
-            List of food items with nutrition data added
-        """
+        """Look up nutrition data for parsed food items."""
         enriched_foods = []
         
         for food in parsed_foods:
@@ -44,15 +36,7 @@ class NutritionAgent:
         return enriched_foods
     
     def _lookup_single_food(self, food: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Look up nutrition for a single food item
-        
-        Args:
-            food: Single parsed food item
-            
-        Returns:
-            Food item with nutrition data
-        """
+        """Look up nutrition for a single food item via USDA."""
         food_name = food.get("name", "")
         quantity = food.get("quantity", 1)
         unit = food.get("unit", "serving")
@@ -136,8 +120,8 @@ class NutritionAgent:
     def _ai_estimate_nutrition(self, food_name: str, quantity: float, unit: str) -> Optional[Dict[str, float]]:
         """Use AI to estimate nutrition when USDA lookup fails."""
         try:
-            from ..services.openai_service import get_openai_service
-            ai_service = get_openai_service()
+            from ..services.ai_service import get_ai_service
+            ai_service = get_ai_service()
 
             prompt = f"""Estimate the nutritional content for: {quantity} {unit} of {food_name}
 
@@ -181,16 +165,7 @@ If you truly have no idea what this food is, return: {{"calories": 0, "protein":
             return None
     
     def _calculate_match_confidence(self, query: str, matched_description: str) -> str:
-        """
-        Calculate confidence score for USDA match
-        
-        Args:
-            query: Original search query
-            matched_description: USDA description that was matched
-            
-        Returns:
-            Confidence level: "high", "medium", or "low"
-        """
+        """Calculate confidence score for USDA match (high/medium/low)."""
         query_lower = query.lower()
         matched_lower = matched_description.lower()
         
@@ -211,15 +186,7 @@ If you truly have no idea what this food is, return: {{"calories": 0, "protein":
             return "low"
     
     def calculate_totals(self, enriched_foods: List[Dict[str, Any]]) -> Dict[str, float]:
-        """
-        Calculate total nutrition from list of foods
-        
-        Args:
-            enriched_foods: List of food items with nutrition data
-            
-        Returns:
-            Dictionary with totals
-        """
+        """Sum up nutrition totals from all food items."""
         totals = {
             "calories": 0,
             "protein": 0,
@@ -248,46 +215,8 @@ _nutrition_agent: Optional[NutritionAgent] = None
 
 
 def get_nutrition_agent() -> NutritionAgent:
-    """
-    Get or create nutrition agent instance
-    
-    Returns:
-        Nutrition agent singleton
-    """
+    """Get or create nutrition agent singleton."""
     global _nutrition_agent
     if _nutrition_agent is None:
         _nutrition_agent = NutritionAgent()
     return _nutrition_agent
-
-
-if __name__ == "__main__":
-    # Test nutrition agent
-    agent = get_nutrition_agent()
-    
-    test_foods = [
-        {"name": "eggs", "quantity": 2, "unit": "large", "meal_type": "breakfast"},
-        {"name": "whole wheat toast", "quantity": 1, "unit": "slice", "meal_type": "breakfast"},
-        {"name": "banana", "quantity": 1, "unit": "medium", "meal_type": "breakfast"}
-    ]
-    
-    print("Testing Nutrition Agent:\n")
-    print("Looking up nutrition for:")
-    for food in test_foods:
-        print(f"  - {food['quantity']} {food['unit']} {food['name']}")
-    print()
-    
-    enriched = agent.lookup_nutrition(test_foods)
-    
-    print("Results:")
-    for food in enriched:
-        print(f"\n{food['name']}:")
-        print(f"  Calories: {food['calories']}")
-        print(f"  Protein: {food['protein']}g")
-        print(f"  Carbs: {food['carbs']}g")
-        print(f"  Fat: {food['fat']}g")
-        print(f"  Source: {food['source']}")
-        if food.get('usda_match'):
-            print(f"  Matched: {food['usda_match']}")
-    
-    totals = agent.calculate_totals(enriched)
-    print(f"\nTotal: {totals['calories']} calories")

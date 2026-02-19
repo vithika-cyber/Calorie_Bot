@@ -5,7 +5,7 @@ Food Parser Agent - Extracts structured food data from natural language
 import logging
 from typing import Dict, List, Any, Optional
 from datetime import datetime
-from ..services.openai_service import get_openai_service
+from ..services.ai_service import get_ai_service
 
 logger = logging.getLogger(__name__)
 
@@ -15,43 +15,19 @@ class FoodParserAgent:
     
     def __init__(self):
         """Initialize food parser agent"""
-        self.openai_service = get_openai_service()
+        self.ai_service = get_ai_service()
     
     def parse(
         self,
         message: str,
         context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """
-        Parse food message into structured data
-        
-        Args:
-            message: User's food description
-            context: Optional context (time of day, user preferences, etc.)
-            
-        Returns:
-            Dictionary with parsed food data:
-            {
-                "foods": [
-                    {
-                        "name": "food name",
-                        "quantity": float,
-                        "unit": "unit",
-                        "meal_type": "breakfast|lunch|dinner|snack",
-                        "notes": "optional notes"
-                    }
-                ],
-                "meal_type": "overall meal type",
-                "confidence": "high|medium|low",
-                "clarifications_needed": ["questions if ambiguous"],
-                "timestamp": datetime
-            }
-        """
+        """Parse food message into structured data with items, meal type, and confidence."""
         # Build context string
         context_str = self._build_context_string(context)
         
         # Parse using OpenAI
-        result = self.openai_service.parse_food_message(message, context_str)
+        result = self.ai_service.parse_food_message(message, context_str)
         
         # Add timestamp
         result["timestamp"] = datetime.now()
@@ -98,15 +74,7 @@ class FoodParserAgent:
         return " | ".join(parts) if parts else None
     
     def validate_parsed_foods(self, parsed_data: Dict[str, Any]) -> tuple[bool, List[str]]:
-        """
-        Validate that parsed foods are reasonable
-        
-        Args:
-            parsed_data: Parsed food data
-            
-        Returns:
-            Tuple of (is_valid, list of issues)
-        """
+        """Validate that parsed foods have reasonable names and quantities."""
         issues = []
         
         foods = parsed_data.get("foods", [])
@@ -135,16 +103,7 @@ class FoodParserAgent:
         return is_valid, issues
     
     def enhance_food_item(self, food: Dict[str, Any], user_prefs: Optional[Dict] = None) -> Dict[str, Any]:
-        """
-        Enhance a food item with additional metadata
-        
-        Args:
-            food: Food item dictionary
-            user_prefs: User preferences
-            
-        Returns:
-            Enhanced food item
-        """
+        """Enhance a food item with search terms and confidence."""
         enhanced = food.copy()
         
         # Normalize food name
@@ -195,37 +154,8 @@ _food_parser_agent: Optional[FoodParserAgent] = None
 
 
 def get_food_parser_agent() -> FoodParserAgent:
-    """
-    Get or create food parser agent instance
-    
-    Returns:
-        Food parser agent singleton
-    """
+    """Get or create food parser agent singleton."""
     global _food_parser_agent
     if _food_parser_agent is None:
         _food_parser_agent = FoodParserAgent()
     return _food_parser_agent
-
-
-if __name__ == "__main__":
-    # Test food parser agent
-    agent = get_food_parser_agent()
-    
-    test_messages = [
-        "I had 2 scrambled eggs and toast for breakfast",
-        "Ate a banana",
-        "Lunch was chicken breast with rice and broccoli",
-        "Had a handful of almonds as a snack"
-    ]
-    
-    print("Testing Food Parser Agent:\n")
-    for msg in test_messages:
-        result = agent.parse(msg)
-        print(f"Message: '{msg}'")
-        print(f"Parsed foods: {len(result['foods'])}")
-        for food in result['foods']:
-            print(f"  - {food['quantity']} {food.get('unit', '')} {food['name']} ({food.get('meal_type', 'unknown')})")
-        print(f"Confidence: {result['confidence']}")
-        if result.get('clarifications_needed'):
-            print(f"Clarifications: {result['clarifications_needed']}")
-        print()
