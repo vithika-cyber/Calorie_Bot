@@ -8,15 +8,16 @@
 4. [The Agent System (LangGraph)](#the-agent-system-langgraph)
 5. [File-by-File Breakdown](#file-by-file-breakdown)
 6. [Database Design](#database-design)
-7. [Multi-User Support](#multi-user-support)
-8. [How Users Access the Bot](#how-users-access-the-bot)
-9. [External APIs](#external-apis)
-10. [Nutrition Lookup Pipeline](#nutrition-lookup-pipeline)
-11. [Onboarding Flow](#onboarding-flow)
-12. [Configuration & Environment](#configuration--environment)
-13. [Singleton Pattern](#singleton-pattern)
-14. [Logging](#logging)
-15. [Key Design Decisions](#key-design-decisions)
+7. [Phase 2 Features](#phase-2-features)
+8. [Multi-User Support](#multi-user-support)
+9. [How Users Access the Bot](#how-users-access-the-bot)
+10. [External APIs](#external-apis)
+11. [Nutrition Lookup Pipeline](#nutrition-lookup-pipeline)
+12. [Onboarding Flow](#onboarding-flow)
+13. [Configuration & Environment](#configuration--environment)
+14. [Singleton Pattern](#singleton-pattern)
+15. [Logging](#logging)
+16. [Key Design Decisions](#key-design-decisions)
 
 ---
 
@@ -28,6 +29,8 @@ CalorieBot is a Slack chatbot that lets users track what they eat using natural 
 2. Looks up accurate nutrition data (from the USDA government database)
 3. Stores everything in a MySQL database (per user)
 4. Responds with a formatted summary showing calories, macros, and daily progress
+
+Users can also ask historical questions like *"What did I eat yesterday?"* or *"Show me last week"* and get a full food summary with per-day breakdowns.
 
 The bot is built as an **agentic system** -- meaning it has multiple specialized "agents" that each handle one job, coordinated by an orchestrator built on **LangGraph** (a framework for building AI agent workflows).
 
@@ -47,20 +50,25 @@ User sends Slack DM
 [orchestrator.py] process_message() is called with (user_id, team_id, message)
         |
         v
+[Rate Limiter] Check if user is within 10 messages/minute limit
+        |  (rejected? -> "slow down" message)
+        v
 [Step 1: get_user_context]
     - Looks up or creates the user in MySQL
     - Checks if they've completed onboarding
     - Gets their calorie goal (default 2000 if not set)
+    - Loads last 5 conversation messages for context
         |
         v
 [Step 2: route_intent]
-    - Sends message to Gemini AI: "Classify this message's intent"
-    - AI returns: { intent: "log_food", confidence: "high" }
-    - If user is NOT onboarded, all messages route to onboarding instead
+    - First tries keyword matching (no API call needed)
+    - Falls back to Gemini AI only if keywords don't match
+    - Returns: { intent: "log_food", confidence: "high" }
+    - If user is NOT onboarded, all messages route to onboarding
         |
         v
 [Step 3: parse_food] (because intent = "log_food")
-    - Sends message to Gemini AI with a detailed prompt
+    - Sends message + conversation history to Gemini AI
     - AI returns structured JSON:
       {
         foods: [
@@ -73,10 +81,10 @@ User sends Slack DM
         v
 [Step 4: lookup_nutrition]
     For each food item:
-      1. Search USDA FoodData Central API for "scrambled eggs"
-      2. Get nutrition per 100g (e.g., 148 cal, 9.99g protein, ...)
-      3. Convert to the user's serving size (2 large eggs = 2 x 50g = 100g)
-      4. Scale the nutrition: 148 cal for 100g
+      1. Check persistent MySQL cache first
+      2. If not cached, search USDA FoodData Central API
+      3. Cache the result in MySQL for future lookups
+      4. Scale nutrition to the user's serving size
     If USDA has no match:
       1. Ask Gemini AI to estimate the nutrition
       2. If AI also can't identify it, mark as "unknown" (0 cal)
@@ -86,6 +94,9 @@ User sends Slack DM
     - Saves the food log to MySQL (food_logs table)
     - Calculates daily totals so far
     - Builds a formatted Slack response with emojis and progress bar
+        |
+        v
+[Save conversation history] User message + bot response stored for context
         |
         v
 [main.py] Sends the formatted response back to the user in Slack
@@ -103,6 +114,9 @@ count_calories/
   README.md                 # Quick start guide
   ARCHITECTURE.md           # This file
   calorie_bot.log           # Runtime log file (auto-created)
+  docs/
+    agent_flowchart.png     # Visual diagram of the agent flow
+    nutrition_pipeline.png  # Visual diagram of the nutrition lookup
   
   src/
     __init__.py             # Package marker, contains version
@@ -112,25 +126,26 @@ count_calories/
     agents/                 # The "brain" - AI agents that process messages
       __init__.py
       orchestrator.py       # LangGraph workflow that coordinates everything
-      router_agent.py       # Classifies user intent (log_food, query, greeting...)
+      router_agent.py       # Classifies user intent (keyword match + Gemini fallback)
       food_parser.py        # Extracts structured food data from natural language
       nutrition_lookup.py   # Looks up calories/macros from USDA + AI fallback
-      storage_agent.py      # All database read/write operations
+      storage_agent.py      # All database read/write operations + conversation history
     
     services/               # Wrappers for external APIs
       __init__.py
       ai_service.py         # Google Gemini API wrapper (food parsing, intent detection)
-      usda_service.py       # USDA FoodData Central API wrapper (nutrition data)
+      usda_service.py       # USDA FoodData Central API wrapper (with persistent cache)
     
     database/               # Database layer
       __init__.py
       database.py           # SQLAlchemy engine, session management
-      models.py             # ORM models: User, FoodLog, Goal
+      models.py             # ORM models: User, FoodLog, Goal, ConversationMessage, NutritionCache
     
     utils/                  # Pure helper functions (no API calls, no DB)
       __init__.py
       calculations.py       # BMR, TDEE, calorie goal math
       formatters.py         # Builds Slack-formatted response messages
+      rate_limiter.py       # Per-user token bucket rate limiter
   
   tests/                    # Test directory (placeholder)
     __init__.py
@@ -153,15 +168,23 @@ LangGraph is a framework that lets you define AI workflows as a **directed graph
 - **Green node** = onboarding flow
 - **Red node** = error/unknown intent fallback
 
+### How Routing Works
+
+Intent detection uses a **two-tier strategy** to minimize API costs:
+
+1. **Keyword matching** (free, instant) -- checks the message against predefined keyword lists. Short keywords (<=3 chars like "hi") use word-boundary matching to avoid false positives (e.g., "hi" inside "chicken"). Query phrases like "what did I eat" are checked first to prevent them from matching as `log_food`.
+
+2. **Gemini AI** (API call) -- only invoked when keyword matching fails. The AI classifies the intent with conversation history for better context.
+
 ### Detailed Food Logging Pipeline
 
 ![Nutrition Pipeline](docs/nutrition_pipeline.png)
 
 The food logging pipeline has 3 stages:
 
-1. **parse_food** -- Gemini AI extracts structured food items (name, quantity, unit, meal type) from the user's natural language message
-2. **lookup_nutrition** -- For each item, searches USDA first; if not found, asks AI to estimate; if AI also fails, marks as unknown (0 cal)
-3. **store_food_log** -- If all items are unknown, asks the user for help instead of saving. Otherwise saves to MySQL, calculates daily totals, and builds a formatted Slack response with emojis and a progress bar
+1. **parse_food** -- Gemini AI extracts structured food items (name, quantity, unit, meal type) from the user's natural language message. Conversation history is passed for context (e.g., if user said "and a coffee" referring to a previous meal).
+2. **lookup_nutrition** -- For each item, checks the persistent MySQL cache first; if not cached, searches USDA; caches the result; if USDA has no match, asks AI to estimate; if AI also fails, marks as unknown (0 cal).
+3. **store_food_log** -- If all items are unknown, asks the user for help instead of saving. Otherwise saves to MySQL, calculates daily totals, and builds a formatted Slack response with emojis and a progress bar.
 
 ### State Object
 
@@ -174,6 +197,7 @@ class ConversationState(TypedDict):
     message: str                          # Original user message
     intent: Optional[str]                 # Detected intent (log_food, greeting, etc.)
     user_context: Optional[Dict]          # User's profile (calorie goal, onboard status)
+    history: Optional[list]               # Recent conversation messages for context
     parsed_foods: Optional[list]          # AI-parsed food items
     enriched_foods: Optional[list]        # Foods with nutrition data added
     totals: Optional[Dict[str, float]]    # Sum of calories, protein, carbs, fat
@@ -188,8 +212,8 @@ After the Router Agent classifies the message, the orchestrator routes to the ri
 | Intent | Routes To | What It Does |
 |--------|-----------|-------------|
 | `log_food` | parse_food -> lookup_nutrition -> store_food_log | Full food logging pipeline |
-| `query_today` | handle_query | Shows daily summary with progress bar |
-| `query_history` | handle_query | Shows past meal history |
+| `query_today` | handle_query | Shows daily summary with progress bar and food items |
+| `query_history` | handle_query | Shows historical summary with per-day food breakdown |
 | `greeting` | handle_greeting | Says hi, prompts to log food |
 | `help` | handle_help | Shows usage instructions |
 | `onboarding_needed` | handle_onboarding | Collects user profile (age, weight, etc.) |
@@ -232,14 +256,19 @@ The central coordinator. Contains:
 - The LangGraph workflow definition (nodes + edges)
 - All node handler functions (`_parse_food`, `_store_food_log`, `_handle_onboarding`, etc.)
 - The `process_message()` method that main.py calls
-
-This is the longest file because it contains the actual business logic for each conversation path.
+- **Rate limiter** (10 requests/minute per user)
+- **Date parsing** for historical queries ("yesterday", "last week", specific dates like "Feb 14")
+- **Conversation history** save/load for context awareness
 
 ### `src/agents/router_agent.py` - Intent Classifier
 
-Takes a message and returns what the user wants to do. Two-step process:
-1. If the user hasn't completed onboarding, **always** routes to `onboarding_needed` (regardless of what they said)
-2. Otherwise, sends the message to Gemini AI for intent classification
+Takes a message and returns what the user wants to do. Three-step process:
+1. If the user hasn't completed onboarding, **always** routes to `onboarding_needed`
+2. Attempts **keyword matching** against predefined intent lists (free, no API call):
+   - Query phrases ("what did I eat") are checked first to avoid false `log_food` matches
+   - Short keywords use word-boundary matching (prevents "hi" matching inside "chicken")
+   - Keywords cover: query_today, query_history, help, greeting, log_food
+3. If no keyword match, sends the message + conversation history to **Gemini AI** for classification
 
 ### `src/agents/food_parser.py` - NLU for Food
 
@@ -247,8 +276,7 @@ Takes "I had 2 eggs and toast" and returns structured data. Uses Gemini AI with 
 - Knows about standard serving sizes ("an apple" = 1 medium)
 - Infers meal types from time of day
 - Returns standardized units (never uses the food name as a unit)
-
-Also adds time-of-day context (morning = likely breakfast, evening = likely dinner).
+- Receives conversation history for context (e.g., follow-up messages)
 
 ### `src/agents/nutrition_lookup.py` - Nutrition Data
 
@@ -265,17 +293,21 @@ All database reads and writes go through this agent. Key operations:
 - `get_or_create_user()` - find or make a user record
 - `update_user()` - save profile changes (after onboarding)
 - `create_food_log()` - store a meal entry
-- `get_food_logs_by_date()` - retrieve all logs for a specific date
-- `get_daily_totals()` - sum up today's calories, protein, carbs, fat
+- `get_food_logs_by_date()` - retrieve all logs for a specific date (including items JSON)
+- `get_food_logs_by_range()` - retrieve logs across a date range
+- `get_daily_totals()` - sum up a day's calories, protein, carbs, fat
+- `get_range_totals()` - sum nutrition across a date range with per-day breakdown and food names
 - `delete_food_log()` - remove an entry
+- `save_message()` - store a conversation message (auto-prunes to last 10)
+- `get_recent_messages()` - fetch recent messages for conversation context
 
 All methods return **plain dictionaries** (not ORM objects) to avoid SQLAlchemy session issues.
 
 ### `src/services/ai_service.py` - Gemini AI Wrapper
 
 Wraps all interactions with Google Gemini. Three methods:
-- `parse_food_message()` - extracts food items from text (returns JSON)
-- `detect_intent()` - classifies user intent (returns JSON)
+- `parse_food_message()` - extracts food items from text (returns JSON), accepts conversation history
+- `detect_intent()` - classifies user intent (returns JSON), accepts conversation history
 - `generate_response()` - generates natural language replies
 
 Uses `response_mime_type="application/json"` to force Gemini to return valid JSON. Also strips markdown code fences that Gemini sometimes wraps around JSON.
@@ -285,17 +317,19 @@ Temperature is set to 0.3 (low) for consistent, predictable responses.
 ### `src/services/usda_service.py` - USDA API Wrapper
 
 Wraps the USDA FoodData Central API. Key features:
-- **24-hour in-memory cache** - avoids repeat API calls for the same food
+- **Persistent MySQL cache** - stores USDA results in the `nutrition_cache` table so repeated lookups for the same food never hit the API again (survives bot restarts)
 - **Nutrient parsing** - extracts calories, protein, carbs, fat, fiber, sugar from raw API response (matches by nutrient ID for reliability)
 - **Serving size conversion** - maps 70+ unit names (cup, slice, egg, handful, nacho...) to gram weights, then scales nutrition accordingly
 
 ### `src/database/models.py` - ORM Models
 
-Three SQLAlchemy models:
+Five SQLAlchemy models:
 
 - **User** - one row per Slack user
 - **FoodLog** - one row per meal logged
-- **Goal** - one row per fitness goal (currently created during onboarding)
+- **Goal** - one row per fitness goal (created during onboarding)
+- **ConversationMessage** - stores recent user/bot messages per user for conversation context
+- **NutritionCache** - persistent cache for USDA API responses
 
 ### `src/database/database.py` - Connection Management
 
@@ -315,7 +349,19 @@ Builds the formatted messages the bot sends back. Uses Slack's `mrkdwn` syntax (
 - `_italic_` instead of `*italic*`
 - `:emoji_name:` shortcodes instead of Unicode emojis
 
-Includes food-specific emojis (chicken = :poultry_leg:, apple = :apple:) and progress bars made of colored square emojis.
+Key formatters:
+- `format_food_log_message()` - formats a newly logged meal with per-item details
+- `format_daily_summary()` - shows a single day's intake with progress bar, macros, and **food names under each meal**
+- `format_range_summary()` - shows multi-day summaries with per-day calorie totals and **food eaten each day**
+- `create_progress_bar()` - colored square emojis for visual progress
+
+### `src/utils/rate_limiter.py` - Rate Limiting
+
+Implements a per-user **sliding window** rate limiter (token bucket pattern):
+- Default: 10 messages per 60-second window
+- In-memory (resets on bot restart)
+- Returns how many seconds until the user can send again
+- Prevents abuse and excessive Gemini API costs
 
 ---
 
@@ -391,14 +437,130 @@ The `items` JSON column stores the full detail of each food item:
 | start_date | DATETIME | When goal started |
 | target_date | DATETIME | Deadline (optional) |
 
+#### `conversation_history`
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INT (PK) | Auto-increment ID |
+| user_id | INT (FK -> users.id) | Which user's message |
+| role | VARCHAR(10) | "user" or "bot" |
+| content | TEXT | The message text |
+| created_at | DATETIME | When the message was sent |
+
+Auto-pruned to keep only the **last 10 messages** per user. Used to provide conversation context to Gemini AI for better intent detection and food parsing.
+
+#### `nutrition_cache`
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INT (PK) | Auto-increment ID |
+| cache_key | VARCHAR(255) | Unique key (e.g., `search:eggs:5`) |
+| data | JSON | Cached API response |
+| created_at | DATETIME | When the cache entry was created |
+
+Persistent cache for USDA API responses. Survives bot restarts. Prevents redundant API calls when the same food is looked up multiple times.
+
 ### Relationships
 
 ```
 User (1) ---< (many) FoodLog
 User (1) ---< (many) Goal
+User (1) ---< (many) ConversationMessage
 ```
 
-A user has many food logs and many goals. Deleting a user cascades and deletes their logs and goals.
+A user has many food logs, goals, and conversation messages. Deleting a user cascades and deletes their logs and goals.
+
+---
+
+## Phase 2 Features
+
+These features were added after the initial MVP to improve reliability, reduce API costs, and make conversations feel more natural.
+
+### 1. Conversation Memory
+
+**What**: The bot remembers the last 5 messages in a conversation to provide context.
+
+**How**: After every message exchange, both the user's message and the bot's response are saved to the `conversation_history` table. When processing a new message, recent history is loaded and passed to Gemini AI alongside the current message.
+
+**Why**: Enables follow-up messages like "and a coffee" after logging breakfast, and helps the AI understand ambiguous messages in context.
+
+### 2. Keyword Matching for Intents
+
+**What**: Common intents are detected via keyword matching *before* calling Gemini AI.
+
+**How**: The router agent has predefined keyword lists for each intent. Messages are checked against these lists first. Only when no keyword match is found does the bot call Gemini for intent classification.
+
+**Why**: Reduces Gemini API calls by ~60-70%. Most messages ("I had an apple", "what did I eat today?", "hi") match keywords and never need an AI call for intent detection.
+
+**Special handling**:
+- Query phrases ("what did I eat") are checked before log_food to prevent false matches on shared keywords like "ate"
+- Short keywords (<=3 chars) use regex word boundaries to prevent matching inside other words (e.g., "hi" inside "chicken")
+
+### 3. Date Parsing for Historical Queries
+
+**What**: Users can ask about specific dates or date ranges using natural language.
+
+**How**: The orchestrator's `_parse_date_reference()` method handles:
+- Relative dates: "yesterday", "last week", "this week", "last 3 days"
+- Specific dates: "Feb 14", "13th February 2026", "2026-02-14"
+- Falls back to "today" if no date reference is found
+
+Uses `dateutil.parser` for fuzzy date parsing of specific dates.
+
+**Example queries**:
+- "What did I eat yesterday?" -> shows single-day summary
+- "Show me last week" -> shows 7-day summary with per-day breakdown
+- "What did I eat on Feb 14?" -> shows that specific date's meals and food items
+
+### 4. Persistent USDA Cache
+
+**What**: USDA API responses are cached in MySQL instead of in-memory.
+
+**How**: The `nutrition_cache` table stores serialized API responses keyed by search query. Before making a USDA API call, the cache is checked. Results are stored after successful API calls.
+
+**Why**: Survives bot restarts (in-memory cache was lost on every restart). Eliminates redundant API calls across sessions. Common foods like "rice" or "chicken" are looked up once and cached permanently.
+
+### 5. Per-User Rate Limiting
+
+**What**: Each user is limited to 10 messages per 60-second window.
+
+**How**: A sliding window token bucket tracks timestamps of each user's messages. If the limit is exceeded, the bot responds with a "slow down" message and tells the user how many seconds to wait.
+
+**Why**: Prevents accidental API cost spikes (e.g., a user spamming messages) and protects Gemini's rate limits from being exhausted.
+
+### 6. Food Summaries in Queries
+
+**What**: When users ask "what did I eat?", the response now includes the actual food names, not just calorie totals.
+
+**How**: The `items` JSON from each food log is parsed to extract food names. For single-day queries, food names appear under each meal. For multi-day queries, food names appear under each day.
+
+**Example output (single day)**:
+```
+Daily Summary - Feb 14, 2026
+
+1665/1562 calories (106%)
+103 calories over
+
+Meals logged:
+  Breakfast: 305 cal
+    mixed berries, greek yogurt, banana
+  Lunch: 760 cal
+    chole (chickpea curry), bhature
+  Dinner: 600 cal
+    pasta with marinara, garlic bread
+```
+
+**Example output (multi-day)**:
+```
+Last 7 Days (7 days)
+
+Total: 10389 cal
+Daily avg: 1484 cal
+
+Per-day breakdown:
+  Thu, Feb 12: 1360 cal
+    oatmeal, banana, honey, grilled chicken breast, ...
+  Fri, Feb 13: 1712 cal
+    boiled eggs, whole wheat toast, paneer butter masala, ...
+```
 
 ---
 
@@ -414,9 +576,13 @@ The bot is fully multi-user. Here's how:
 
 4. **Per-user goals**: Each user has their own calorie goal, calculated from their personal profile (age, weight, height, activity level, fitness goal).
 
-5. **Team awareness**: The `slack_team_id` is stored too, so the same bot instance could theoretically serve multiple Slack workspaces (each user is identified by the combination of user_id + team_id).
+5. **Per-user conversation history**: Each user's conversation context is stored and retrieved independently.
 
-6. **No shared state**: All agents are stateless. The `ConversationState` is created fresh for each message. User data comes from the database, not from in-memory state.
+6. **Per-user rate limiting**: Rate limits are tracked per user, so one user's activity doesn't affect another.
+
+7. **Team awareness**: The `slack_team_id` is stored too, so the same bot instance could theoretically serve multiple Slack workspaces (each user is identified by the combination of user_id + team_id).
+
+8. **No shared state**: All agents are stateless. The `ConversationState` is created fresh for each message. User data comes from the database, not from in-memory state.
 
 ---
 
@@ -457,17 +623,20 @@ When users click on the bot's name in Slack and open the "Home" tab, they see a 
 ## External APIs
 
 ### Google Gemini (AI)
-- **What for**: Intent detection, food parsing, nutrition estimation, onboarding data extraction
+- **What for**: Intent detection (fallback), food parsing, nutrition estimation, onboarding data extraction
 - **Model**: Configurable via `GEMINI_MODEL` in `.env` (currently `gemini-2.5-flash-lite`)
 - **Cost**: Free tier available (rate-limited; `gemini-2.5-flash-lite` has the most generous free quota)
-- **Calls per message**: 1-3 depending on intent (intent detection always; food parsing if logging; nutrition estimation if USDA fails)
+- **Calls per message**: 0-3 depending on intent:
+  - 0 calls if keyword matching handles intent + food was previously cached
+  - 1 call for food parsing (most common)
+  - 2-3 calls if AI intent detection is needed or USDA misses and AI estimates nutrition
 
 ### USDA FoodData Central
 - **What for**: Accurate nutrition data (calories, protein, carbs, fat, fiber, sugar per 100g)
 - **Cost**: 100% free
 - **API key**: Optional (higher rate limits with key)
 - **Data types queried**: Survey (FNDDS), Foundation, SR Legacy
-- **Caching**: Results cached in-memory for 24 hours to avoid repeat calls
+- **Caching**: Results cached in MySQL `nutrition_cache` table (persistent across restarts)
 
 ### Slack Bolt
 - **Connection**: Socket Mode (WebSocket) -- no public URL or ngrok needed
@@ -478,9 +647,13 @@ When users click on the bot's name in Slack and open the "Home" tab, they see a 
 
 ## Nutrition Lookup Pipeline
 
-When the bot needs to find nutrition data for a food item, it follows a 3-tier fallback strategy:
+When the bot needs to find nutrition data for a food item, it follows a 4-tier strategy:
 
 ```
+Tier 0: Persistent MySQL Cache (instant, free)
+   |
+   | Not in cache?
+   v
 Tier 1: USDA Database (most accurate)
    |
    | Not found?
@@ -492,12 +665,18 @@ Tier 2: Gemini AI Estimation (reasonable estimate)
 Tier 3: Mark as "unknown" (0 cal) and ask the user for help
 ```
 
+### Tier 0 - Persistent Cache
+- Checks the `nutrition_cache` MySQL table for a previous lookup
+- Key format: `search:<food_name>:<page_size>` or `food:<fdc_id>`
+- Cache entries survive bot restarts
+
 ### Tier 1 - USDA Lookup
 - Searches USDA FoodData Central by food name
 - Takes the first (best) match
 - USDA returns nutrition per 100g
 - The bot converts the user's serving to grams using a unit mapping table (70+ units)
 - Scales nutrition proportionally
+- **Result is cached** in MySQL for future lookups
 
 ### Tier 2 - AI Estimation
 - Asks Gemini: "Estimate nutrition for 2 large scrambled eggs"
@@ -601,10 +780,12 @@ Key events that are logged:
 - Configuration validation (pass/fail)
 - Database initialization
 - Every incoming message (user ID + text)
-- Intent detection results
+- Intent detection results (keyword match vs Gemini)
 - Food parsing results (number of items, confidence)
-- USDA search results (number of matches)
+- USDA search results (number of matches, cache hit/miss)
 - AI estimation attempts
+- Rate limit rejections
+- Conversation history saves
 - Errors with full stack traces
 
 ---
@@ -617,11 +798,16 @@ Key events that are logged:
 | **Google Gemini** over OpenAI | Free tier available. No credit card required to start. |
 | **USDA API** over other nutrition APIs | Free, government-maintained, no sign-up required. Most accurate data. |
 | **AI fallback** for unknown foods | USDA doesn't have everything (e.g., regional dishes). AI provides reasonable estimates. |
+| **Keyword matching before AI** | Reduces Gemini API calls by ~60-70%. Most common intents are detectable by simple keywords. |
+| **Word-boundary matching for short keywords** | Prevents false positives like "hi" matching inside "chicken". |
+| **Persistent MySQL cache** over in-memory | Survives bot restarts. Common foods are cached once and never looked up again. |
+| **Conversation memory** (last 5 messages) | Enables follow-up messages and contextual understanding without storing full history. |
+| **Per-user rate limiting** | Prevents API cost spikes and protects Gemini rate limits from being exhausted. |
 | **Socket Mode** over webhooks | No need for a public URL or ngrok. Works behind firewalls. Just run the script. |
 | **MySQL** over SQLite | Better for multi-user production use. SQLite is still supported via config. |
 | **Dict returns** from StorageAgent | SQLAlchemy ORM objects detach from sessions after the `with` block closes. Returning dicts avoids `DetachedInstanceError`. |
 | **Slack mrkdwn** not standard markdown | Slack uses its own formatting syntax. `*bold*` not `**bold**`, `:emoji:` not Unicode. |
 | **Singleton agents** | Avoids recreating API clients and compiled graphs on every message. |
-| **In-memory USDA cache** | Reduces API calls. Same food searched twice within 24h hits cache instead of USDA. |
+| **Food names in query responses** | Users asking "what did I eat?" want to see actual foods, not just calorie numbers. |
 | **All values rounded to 2 decimal places** | Prevents ugly output like `2.7222222222222223g`. |
 | **Minimum 1200 cal goal** | Safety check -- the bot won't recommend dangerously low calorie intake. |

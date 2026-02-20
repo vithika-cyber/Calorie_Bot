@@ -8,17 +8,40 @@ A conversational AI-powered calorie tracking bot for Slack. Tell it what you ate
 - **USDA Nutrition Data** - Accurate values from the official government database, with AI fallback estimation
 - **Daily Tracking** - Progress bars, macro breakdowns, and goal tracking
 - **Personalized Goals** - Calorie targets based on your age, weight, height, and activity level
+- **Historical Queries** - "What did I eat yesterday?" or "Show me last week" with full food summaries
+- **Conversation Memory** - Understands follow-up messages using recent chat context
+- **Smart Routing** - Keyword matching reduces AI calls by ~60-70%; Gemini used only when needed
+- **Persistent Caching** - USDA results cached in MySQL so repeated lookups are instant
+- **Rate Limiting** - Per-user limits (10 msg/min) to prevent API abuse
 
 ## Architecture
 
 Built with LangGraph (agentic workflow):
 
 ```
-Slack message -> Router Agent -> Food Parser (Gemini AI)
-                                      |
-                              Nutrition Lookup (USDA API + AI fallback)
-                                      |
-                              Storage Agent (MySQL) -> Response
+Slack message -> Rate Limiter -> Load Context + History
+                                        |
+                                   Router Agent
+                              (keywords first, then AI)
+                                        |
+                    ┌───────────┬───────┼───────┬──────────┐
+                    v           v       v       v          v
+               Log Food     Query   Greeting  Help    Onboarding
+                    |       (today/
+                    v       history)
+              Food Parser
+             (Gemini AI)
+                    |
+                    v
+           Nutrition Lookup
+       (Cache -> USDA -> AI fallback)
+                    |
+                    v
+           Storage Agent (MySQL)
+                    |
+                    v
+           Formatted Response
+         (with emojis + progress bar)
 ```
 
 ## Tech Stack
@@ -26,7 +49,7 @@ Slack message -> Router Agent -> Food Parser (Gemini AI)
 - **Python 3.11+** with LangGraph / LangChain
 - **Google Gemini** for NLU (food parsing, intent detection, onboarding)
 - **USDA FoodData Central API** for nutrition data
-- **MySQL** via SQLAlchemy
+- **MySQL** via SQLAlchemy (5 tables: users, food_logs, goals, conversation_history, nutrition_cache)
 - **Slack Bolt** with Socket Mode
 
 ## Quick Start
@@ -91,20 +114,60 @@ src/
   main.py                 # Entry point, Slack event handlers
   config.py               # Settings from .env
   agents/
-    orchestrator.py       # LangGraph workflow (core logic)
-    router_agent.py       # Intent classification
-    food_parser.py        # NL -> structured food data
+    orchestrator.py       # LangGraph workflow (core logic + date parsing + rate limiting)
+    router_agent.py       # Intent classification (keyword match + Gemini fallback)
+    food_parser.py        # NL -> structured food data (with conversation context)
     nutrition_lookup.py   # USDA lookup + AI fallback
-    storage_agent.py      # Database CRUD
+    storage_agent.py      # Database CRUD + conversation history + range queries
   services/
-    ai_service.py         # Google Gemini wrapper
-    usda_service.py       # USDA FoodData Central wrapper
+    ai_service.py         # Google Gemini wrapper (with history support)
+    usda_service.py       # USDA FoodData Central wrapper (with persistent MySQL cache)
   database/
     database.py           # SQLAlchemy engine/session
-    models.py             # User, FoodLog, Goal models
+    models.py             # User, FoodLog, Goal, ConversationMessage, NutritionCache
   utils/
     calculations.py       # BMR, TDEE, calorie goal math
-    formatters.py         # Slack message formatting
+    formatters.py         # Slack message formatting (daily summary, range summary, food logs)
+    rate_limiter.py       # Per-user sliding window rate limiter
+```
+
+## Example Interactions
+
+**Logging food:**
+```
+User: I had 2 eggs and toast for breakfast
+Bot:  ✅ Logged Breakfast (8:30 AM)
+      🥚 2 large scrambled eggs: 148 cal | P: 9.99g C: 1.61g F: 11.09g
+      🍞 1 slice toast: 75 cal | P: 2.6g C: 14.3g F: 1.0g
+      Meal total: 223 calories
+      📊 Daily Progress: 223/1562 cal (14%)
+```
+
+**Querying a specific date:**
+```
+User: What did I eat on Feb 14?
+Bot:  📊 Daily Summary - Feb 14, 2026
+      1665/1562 calories (106%)
+      Meals logged:
+        🌅 Breakfast: 305 cal
+          mixed berries, greek yogurt, banana
+        ☀️ Lunch: 760 cal
+          chole (chickpea curry), bhature
+        🌙 Dinner: 600 cal
+          pasta with marinara, garlic bread
+```
+
+**Querying a date range:**
+```
+User: What did I eat last week?
+Bot:  📅 Last 7 Days (7 days)
+      Total: 10389 cal | Daily avg: 1484 cal
+      Per-day breakdown:
+        Thu, Feb 12: 1360 cal
+          oatmeal, banana, grilled chicken breast, dal, rice, roti
+        Fri, Feb 13: 1712 cal
+          boiled eggs, toast, paneer butter masala, naan, chicken stir fry
+        ...
 ```
 
 ## Troubleshooting
@@ -115,6 +178,11 @@ src/
 | Gemini quota error (429) | Switch to `gemini-2.5-flash-lite` in `.env`, or wait for daily reset |
 | USDA returns no results | Bot falls back to AI estimation automatically |
 | Database errors | Verify `DATABASE_URL` and that the MySQL database exists |
+| "Slow down" message | Rate limit hit (10 msg/min). Wait a few seconds. |
+
+## Documentation
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system guide including database schema, agent design, and all design decisions.
 
 ## License
 

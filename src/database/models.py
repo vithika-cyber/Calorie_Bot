@@ -219,3 +219,28 @@ class Goal(Base):
     def is_active(self) -> bool:
         """Check if goal is active"""
         return self.status == GoalStatus.ACTIVE
+
+
+class ConversationMessage(Base):
+    """Stores recent messages per user for conversation context."""
+
+    __tablename__ = "conversation_history"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(String(10), nullable=False)  # "user" or "bot"
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+
+
+class NutritionCache(Base):
+    """Persistent cache for USDA nutrition lookups."""
+
+    __tablename__ = "nutrition_cache"
+
+    id = Column(Integer, primary_key=True)
+    cache_key = Column(String(255), unique=True, nullable=False, index=True)
+    data = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

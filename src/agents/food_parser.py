@@ -20,14 +20,13 @@ class FoodParserAgent:
     def parse(
         self,
         message: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        history: Optional[List[Dict[str, str]]] = None
     ) -> Dict[str, Any]:
         """Parse food message into structured data with items, meal type, and confidence."""
-        # Build context string
         context_str = self._build_context_string(context)
-        
-        # Parse using OpenAI
-        result = self.ai_service.parse_food_message(message, context_str)
+
+        result = self.ai_service.parse_food_message(message, context_str, history=history)
         
         # Add timestamp
         result["timestamp"] = datetime.now()

@@ -106,7 +106,46 @@ def format_daily_summary(
         lines.append("*Meals logged:*")
         for meal in meals:
             meal_emoji = _get_meal_emoji(meal['meal_type'])
-            lines.append(f"{meal_emoji} {meal['meal_type'].capitalize()}: {int(meal['calories'])} cal")
+            lines.append(f"{meal_emoji} *{meal['meal_type'].capitalize()}:* {int(meal['calories'])} cal")
+            food_names = meal.get("food_names", [])
+            if food_names:
+                lines.append(f"    _{', '.join(food_names)}_")
+
+    return "\n".join(lines)
+
+
+def format_range_summary(
+    label: str,
+    range_data: Dict[str, Any],
+    goal_calories: int
+) -> str:
+    """Format a multi-day date-range summary for Slack."""
+    totals = range_data["totals"]
+    averages = range_data["averages"]
+    daily = range_data["daily"]
+
+    lines = [f":calendar: *{label}*  ({range_data['num_days']} day{'s' if range_data['num_days'] != 1 else ''})", ""]
+    lines.append(f"*Total:* {_fmt(totals['calories'])} cal | P: {_fmt(totals['protein'])}g  C: {_fmt(totals['carbs'])}g  F: {_fmt(totals['fat'])}g")
+    lines.append(f"*Daily avg:* {_fmt(averages['calories'])} cal | P: {_fmt(averages['protein'])}g  C: {_fmt(averages['carbs'])}g  F: {_fmt(averages['fat'])}g")
+
+    if goal_calories:
+        pct = int((averages["calories"] / goal_calories) * 100) if goal_calories > 0 else 0
+        lines.append(f"_Avg {pct}% of your {goal_calories} cal goal_")
+
+    lines.append("")
+    lines.append("*Per-day breakdown:*")
+    for day_str, vals in daily.items():
+        try:
+            day_label = datetime.strptime(day_str, "%Y-%m-%d").strftime("%a, %b %d")
+        except ValueError:
+            day_label = day_str
+        lines.append(f"  *{day_label}:* {_fmt(vals['calories'])} cal")
+        foods = vals.get("foods", [])
+        if foods:
+            lines.append(f"    _{', '.join(foods)}_")
+
+    if not daily:
+        lines.append("  _No food logged in this period._")
 
     return "\n".join(lines)
 

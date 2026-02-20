@@ -3,15 +3,17 @@ Orchestrator - Coordinates all agents using LangGraph
 """
 
 import logging
-from typing import Dict, Any, Optional, TypedDict
+from datetime import date, datetime, timedelta
+from typing import Dict, Any, Optional, TypedDict, Tuple
 from langgraph.graph import StateGraph, END
 
 from .router_agent import get_router_agent
 from .food_parser import get_food_parser_agent
 from .nutrition_lookup import get_nutrition_agent
 from .storage_agent import get_storage_agent
-from ..utils.formatters import format_food_log_message, format_daily_summary
+from ..utils.formatters import format_food_log_message, format_daily_summary, format_range_summary
 from ..utils.calculations import calculate_tdee, calculate_calorie_goal
+from ..utils.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,7 @@ class ConversationState(TypedDict):
     message: str
     intent: Optional[str]
     user_context: Optional[Dict[str, Any]]
+    history: Optional[list]
     parsed_foods: Optional[list]
     enriched_foods: Optional[list]
     totals: Optional[Dict[str, float]]
@@ -39,8 +42,8 @@ class CalorieBotOrchestrator:
         self.food_parser = get_food_parser_agent()
         self.nutrition = get_nutrition_agent()
         self.storage = get_storage_agent()
-        
-        # Build the agent graph
+        self.rate_limiter = RateLimiter(max_requests=10, window_seconds=60)
+
         self.graph = self._build_graph()
     
     def _build_graph(self) -> StateGraph:
@@ -101,26 +104,41 @@ class CalorieBotOrchestrator:
         message: str
     ) -> Dict[str, Any]:
         """Process a user message through the agent graph."""
+        if not self.rate_limiter.is_allowed(user_id):
+            wait = int(self.rate_limiter.time_until_allowed(user_id)) + 1
+            return {
+                "response": f":hourglass: You're sending messages too fast. Try again in {wait} seconds.",
+                "intent": "rate_limited",
+                "error": None
+            }
+
         try:
-            # Initial state
             initial_state = ConversationState(
                 user_id=user_id,
                 team_id=team_id,
                 message=message,
                 intent=None,
                 user_context=None,
+                history=None,
                 parsed_foods=None,
                 enriched_foods=None,
                 totals=None,
                 response=None,
                 error=None
             )
-            
-            # Run through the graph
+
             final_state = self.graph.invoke(initial_state)
-            
+
+            bot_response = final_state.get("response", "I'm not sure how to help with that.")
+
+            try:
+                self.storage.save_message(user_id, "user", message)
+                self.storage.save_message(user_id, "bot", bot_response)
+            except Exception as save_err:
+                logger.warning(f"Could not save conversation history: {save_err}")
+
             return {
-                "response": final_state.get("response", "I'm not sure how to help with that."),
+                "response": bot_response,
                 "intent": final_state.get("intent"),
                 "error": final_state.get("error")
             }
@@ -136,11 +154,10 @@ class CalorieBotOrchestrator:
     # Agent Node Functions
     
     def _get_user_context(self, state: ConversationState) -> ConversationState:
-        """Get user context from database"""
+        """Get user context and conversation history from database."""
         try:
             user_dict = self.storage.get_or_create_user(state["user_id"], state["team_id"])
-            
-            # Use the user dictionary directly
+
             state["user_context"] = {
                 "is_onboarded": user_dict["is_onboarded"],
                 "daily_calorie_goal": user_dict["daily_calorie_goal"] if user_dict["daily_calorie_goal"] else 2000,
@@ -148,9 +165,10 @@ class CalorieBotOrchestrator:
                 "target_weight": user_dict["target_weight"],
                 "preferences": user_dict["preferences"] if user_dict["preferences"] else {}
             }
+
+            state["history"] = self.storage.get_recent_messages(state["user_id"], limit=5)
         except Exception as e:
             logger.error(f"Error getting user context: {e}")
-            # Set default context on error
             state["user_context"] = {
                 "is_onboarded": False,
                 "daily_calorie_goal": 2000,
@@ -158,14 +176,15 @@ class CalorieBotOrchestrator:
                 "target_weight": None,
                 "preferences": {}
             }
+            state["history"] = []
             state["error"] = str(e)
-        
+
         return state
     
     def _route_intent(self, state: ConversationState) -> ConversationState:
         """Route message to appropriate handler"""
         try:
-            routing = self.router.route(state["message"], state["user_context"])
+            routing = self.router.route(state["message"], state["user_context"], history=state.get("history"))
             state["intent"] = routing["intent"]
             logger.info(f"Routed to intent: {routing['intent']}")
         except Exception as e:
@@ -195,7 +214,7 @@ class CalorieBotOrchestrator:
     def _parse_food(self, state: ConversationState) -> ConversationState:
         """Parse food from message"""
         try:
-            parsed = self.food_parser.parse(state["message"], state["user_context"])
+            parsed = self.food_parser.parse(state["message"], state["user_context"], history=state.get("history"))
             state["parsed_foods"] = parsed["foods"]
             
             if not parsed["foods"]:
@@ -283,40 +302,70 @@ class CalorieBotOrchestrator:
 
         return state
     
-    def _handle_query(self, state: ConversationState) -> ConversationState:
-        """Handle query requests"""
+    def _parse_date_reference(self, message: str) -> Tuple[date, date, str]:
+        """Extract a date range from natural language. Returns (start, end, label)."""
+        import re
+        from dateutil import parser as dateutil_parser
+
+        msg = message.lower()
+        today = date.today()
+
+        if "yesterday" in msg:
+            d = today - timedelta(days=1)
+            return (d, d, "Yesterday")
+        if "last week" in msg:
+            return (today - timedelta(days=7), today - timedelta(days=1), "Last 7 Days")
+        if "this week" in msg:
+            monday = today - timedelta(days=today.weekday())
+            return (monday, today, "This Week")
+        if "last 3 days" in msg or "past 3 days" in msg:
+            return (today - timedelta(days=3), today, "Last 3 Days")
+
+        # Try to parse a specific date (e.g. "13th Feb 2026", "Feb 13", "2026-02-13")
         try:
-            intent = state["intent"]
-            
-            if intent == "query_today":
-                # Get today's summary
-                daily_totals = self.storage.get_daily_totals(state["user_id"])
-                goal = state["user_context"].get("daily_calorie_goal", 2000)
-                logs = self.storage.get_food_logs_by_date(state["user_id"])
-                
-                meals = [
-                    {
+            parsed = dateutil_parser.parse(message, fuzzy=True, default=datetime.now()).date()
+            label = parsed.strftime("%b %d, %Y")
+            return (parsed, parsed, label)
+        except (ValueError, OverflowError):
+            pass
+
+        return (today, today, "Today")
+
+    def _handle_query(self, state: ConversationState) -> ConversationState:
+        """Handle query requests (today or historical date ranges)."""
+        try:
+            goal = state["user_context"].get("daily_calorie_goal", 2000)
+            start, end, label = self._parse_date_reference(state["message"])
+
+            is_single_day = (start == end)
+
+            if is_single_day:
+                daily_totals = self.storage.get_daily_totals(state["user_id"], start)
+                logs = self.storage.get_food_logs_by_date(state["user_id"], start)
+                meals = []
+                for log in logs:
+                    food_names = [item.get("name", "") for item in log.get("items", []) if item.get("name")]
+                    meals.append({
                         "meal_type": log["meal_type"],
-                        "calories": log["total_calories"]
-                    }
-                    for log in logs
-                ]
-                
-                response = format_daily_summary(
-                    date="Today",
+                        "calories": log["total_calories"],
+                        "food_names": food_names,
+                    })
+
+                state["response"] = format_daily_summary(
+                    date=label,
                     total_calories=daily_totals["calories"],
                     goal_calories=goal,
                     meals=meals,
                     macros=daily_totals
                 )
-                
-                state["response"] = response
             else:
-                state["response"] = "I can show you today's summary. What would you like to know?"
+                range_data = self.storage.get_range_totals(state["user_id"], start, end)
+                state["response"] = format_range_summary(label, range_data, goal)
+
         except Exception as e:
             logger.error(f"Error handling query: {e}")
             state["response"] = "Sorry, I had trouble retrieving that information."
-        
+
         return state
     
     def _handle_greeting(self, state: ConversationState) -> ConversationState:
@@ -340,7 +389,8 @@ Just tell me what you ate! Examples:
 *Checking progress:*
   "What did I eat today?"
   "How many calories so far?"
-  "Show my meals"
+  "Show me yesterday"
+  "What about last week?"
 
 *Tips:*
   Be specific about quantities when possible

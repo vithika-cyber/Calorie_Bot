@@ -2,12 +2,15 @@
 USDA Service - Wrapper for USDA FoodData Central API
 """
 
+import json
 import logging
 from typing import Dict, List, Optional, Any
 import httpx
 from datetime import datetime, timedelta
 
 from ..config import get_settings
+from ..database.database import get_db_session
+from ..database.models import NutritionCache
 
 logger = logging.getLogger(__name__)
 
@@ -16,29 +19,41 @@ class USDAService:
     """Service for interacting with USDA FoodData Central API"""
     
     def __init__(self):
-        """Initialize USDA service"""
         settings = get_settings()
         self.base_url = settings.usda_base_url
         self.api_key = settings.usda_api_key
-        
-        # Simple in-memory cache for frequent lookups
-        self._cache: Dict[str, tuple[Any, datetime]] = {}
-        self._cache_ttl = timedelta(hours=24)  # Cache for 24 hours
-    
+        self._cache_ttl = timedelta(hours=24)
+
     def _get_from_cache(self, key: str) -> Optional[Any]:
-        """Get data from cache if not expired"""
-        if key in self._cache:
-            data, timestamp = self._cache[key]
-            if datetime.now() - timestamp < self._cache_ttl:
+        """Get data from DB-backed cache if not expired. Lazily deletes stale entries."""
+        try:
+            with get_db_session() as db:
+                row = db.query(NutritionCache).filter(NutritionCache.cache_key == key).first()
+                if row is None:
+                    return None
+                if datetime.utcnow() - row.created_at > self._cache_ttl:
+                    db.delete(row)
+                    db.commit()
+                    return None
                 logger.debug(f"Cache hit for: {key}")
-                return data
-            else:
-                del self._cache[key]
-        return None
-    
+                return row.data
+        except Exception as e:
+            logger.warning(f"Cache read error: {e}")
+            return None
+
     def _add_to_cache(self, key: str, data: Any) -> None:
-        """Add data to cache"""
-        self._cache[key] = (data, datetime.now())
+        """Write data to DB-backed cache, replacing any existing entry for this key."""
+        try:
+            with get_db_session() as db:
+                row = db.query(NutritionCache).filter(NutritionCache.cache_key == key).first()
+                if row:
+                    row.data = data
+                    row.created_at = datetime.utcnow()
+                else:
+                    db.add(NutritionCache(cache_key=key, data=data, created_at=datetime.utcnow()))
+                db.commit()
+        except Exception as e:
+            logger.warning(f"Cache write error: {e}")
     
     def search_foods(self, query: str, page_size: int = 10) -> List[Dict[str, Any]]:
         """Search for foods in USDA database."""
@@ -273,9 +288,14 @@ class USDAService:
         return result
     
     def clear_cache(self) -> None:
-        """Clear the nutrition cache"""
-        self._cache.clear()
-        logger.info("USDA cache cleared")
+        """Delete all entries from the persistent nutrition cache."""
+        try:
+            with get_db_session() as db:
+                db.query(NutritionCache).delete()
+                db.commit()
+            logger.info("USDA cache cleared")
+        except Exception as e:
+            logger.warning(f"Cache clear error: {e}")
 
 
 # Singleton instance

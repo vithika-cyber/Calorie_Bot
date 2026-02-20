@@ -4,7 +4,7 @@ AI Service - Wrapper for Google Gemini API interactions
 
 import json
 import logging
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Any
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -26,6 +26,17 @@ class AIService:
             response_mime_type="application/json"
         )
 
+    @staticmethod
+    def _format_history(history: Optional[List[Dict[str, str]]]) -> str:
+        """Turn a list of {role, content} dicts into a text block for prompt injection."""
+        if not history:
+            return ""
+        lines = ["Recent conversation:"]
+        for msg in history:
+            prefix = "User" if msg["role"] == "user" else "Bot"
+            lines.append(f"  {prefix}: {msg['content'][:200]}")
+        return "\n".join(lines)
+
     def _clean_json_response(self, content: str) -> str:
         """Strip markdown fences from AI response."""
         content = content.strip()
@@ -37,7 +48,8 @@ class AIService:
             content = content[:-3]
         return content.strip()
 
-    def parse_food_message(self, message: str, context: Optional[str] = None) -> Dict[str, Any]:
+    def parse_food_message(self, message: str, context: Optional[str] = None,
+                           history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """Parse a natural language food message into structured data."""
         system_prompt = """You are a nutrition assistant that extracts food items from natural language.
 
@@ -81,9 +93,12 @@ Examples:
 
 Be concise but accurate. If unsure about quantity, default to 1 serving."""
 
+        history_text = self._format_history(history)
         user_prompt = f"Parse this food message: {message}"
         if context:
             user_prompt += f"\n\nContext: {context}"
+        if history_text:
+            user_prompt += f"\n\n{history_text}"
 
         try:
             user_prompt += "\n\nIMPORTANT: Respond ONLY with valid JSON, no other text."
@@ -110,7 +125,8 @@ Be concise but accurate. If unsure about quantity, default to 1 serving."""
                 "clarifications_needed": ["An error occurred. Please try again."]
             }
 
-    def detect_intent(self, message: str) -> Dict[str, Any]:
+    def detect_intent(self, message: str,
+                       history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """Classify user message into an intent (log_food, query_today, greeting, etc.)."""
         system_prompt = """You are an intent classifier for a calorie tracking bot.
 
@@ -134,7 +150,9 @@ Return JSON:
 }"""
 
         try:
-            user_prompt = f"Classify this message: {message}\n\nIMPORTANT: Respond ONLY with valid JSON, no other text."
+            history_text = self._format_history(history)
+            history_block = f"\n\n{history_text}" if history_text else ""
+            user_prompt = f"Classify this message: {message}{history_block}\n\nIMPORTANT: Respond ONLY with valid JSON, no other text."
             messages = [
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt)

@@ -4,11 +4,11 @@ Storage Agent - Handles all database operations
 
 import logging
 from typing import Dict, List, Any, Optional
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from sqlalchemy import and_
 
 from ..database.database import get_db_session
-from ..database.models import User, FoodLog, MealType
+from ..database.models import User, FoodLog, MealType, ConversationMessage
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +190,7 @@ class StorageAgent:
                     "id": log.id,
                     "meal_type": log.meal_type.value if log.meal_type else "other",
                     "raw_text": log.raw_text,
+                    "items": log.items or [],
                     "total_calories": log.total_calories or 0,
                     "total_protein": log.total_protein or 0,
                     "total_carbs": log.total_carbs or 0,
@@ -226,6 +227,85 @@ class StorageAgent:
         
         return totals
     
+    def get_food_logs_by_range(
+        self,
+        slack_user_id: str,
+        start_date: date,
+        end_date: date
+    ) -> List[Dict[str, Any]]:
+        """Get all food logs between two dates (inclusive)."""
+        with get_db_session() as db:
+            user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
+            if not user:
+                return []
+
+            start_dt = datetime.combine(start_date, datetime.min.time())
+            end_dt = datetime.combine(end_date, datetime.max.time())
+
+            logs = db.query(FoodLog).filter(
+                and_(
+                    FoodLog.user_id == user.id,
+                    FoodLog.logged_at >= start_dt,
+                    FoodLog.logged_at <= end_dt
+                )
+            ).order_by(FoodLog.logged_at).all()
+
+            return [
+                {
+                    "id": log.id,
+                    "meal_type": log.meal_type.value if log.meal_type else "other",
+                    "raw_text": log.raw_text,
+                    "items": log.items or [],
+                    "total_calories": log.total_calories or 0,
+                    "total_protein": log.total_protein or 0,
+                    "total_carbs": log.total_carbs or 0,
+                    "total_fat": log.total_fat or 0,
+                    "logged_at": log.logged_at
+                }
+                for log in logs
+            ]
+
+    def get_range_totals(
+        self,
+        slack_user_id: str,
+        start_date: date,
+        end_date: date
+    ) -> Dict[str, Any]:
+        """Sum nutrition across a date range and return per-day breakdown."""
+        logs = self.get_food_logs_by_range(slack_user_id, start_date, end_date)
+
+        totals = {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fat": 0.0}
+        daily: Dict[str, Dict[str, Any]] = {}
+
+        for log in logs:
+            day_key = log["logged_at"].strftime("%Y-%m-%d")
+            if day_key not in daily:
+                daily[day_key] = {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fat": 0.0, "foods": []}
+            for k in totals:
+                totals[k] += log[f"total_{k}"]
+                daily[day_key][k] += log[f"total_{k}"]
+            # Collect food names from items for a readable summary
+            for item in log.get("items", []):
+                name = item.get("name", "")
+                if name:
+                    daily[day_key]["foods"].append(name)
+
+        num_days = max((end_date - start_date).days + 1, 1)
+        averages = {k: round(v / num_days, 1) for k, v in totals.items()}
+        totals = {k: round(v, 1) for k, v in totals.items()}
+        daily = {
+            d: {
+                "calories": round(vals["calories"], 1),
+                "protein": round(vals["protein"], 1),
+                "carbs": round(vals["carbs"], 1),
+                "fat": round(vals["fat"], 1),
+                "foods": vals["foods"],
+            }
+            for d, vals in sorted(daily.items())
+        }
+
+        return {"totals": totals, "averages": averages, "daily": daily, "num_days": num_days}
+
     def delete_food_log(self, log_id: int, slack_user_id: str) -> bool:
         """Delete a food log entry. Returns True if deleted."""
         with get_db_session() as db:
@@ -249,7 +329,43 @@ class StorageAgent:
             logger.info(f"Deleted food log {log_id} for user {slack_user_id}")
             
             return True
-    
+
+    # Conversation History Operations
+
+    def save_message(self, slack_user_id: str, role: str, content: str) -> None:
+        """Save a message and prune to keep only the last 5 per user."""
+        with get_db_session() as db:
+            user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
+            if not user:
+                return
+
+            msg = ConversationMessage(user_id=user.id, role=role, content=content)
+            db.add(msg)
+            db.commit()
+
+            count = db.query(ConversationMessage).filter(
+                ConversationMessage.user_id == user.id
+            ).count()
+            if count > 10:
+                oldest = db.query(ConversationMessage).filter(
+                    ConversationMessage.user_id == user.id
+                ).order_by(ConversationMessage.created_at).limit(count - 10).all()
+                for old in oldest:
+                    db.delete(old)
+                db.commit()
+
+    def get_recent_messages(self, slack_user_id: str, limit: int = 5) -> List[Dict[str, str]]:
+        """Get last N messages for a user as a list of {role, content} dicts."""
+        with get_db_session() as db:
+            user = db.query(User).filter(User.slack_user_id == slack_user_id).first()
+            if not user:
+                return []
+
+            msgs = db.query(ConversationMessage).filter(
+                ConversationMessage.user_id == user.id
+            ).order_by(ConversationMessage.created_at.desc()).limit(limit).all()
+
+            return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
 
 
 # Singleton instance
